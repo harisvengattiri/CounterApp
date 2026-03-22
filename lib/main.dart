@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import 'dart:math';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_compass/flutter_compass.dart';
@@ -17,11 +18,11 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Muslim App',
+      title: 'Imam App',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
       ),
-      home: const MyHomePage(title: 'Muslim App'),
+      home: const MyHomePage(title: 'Imam App'),
     );
   }
 }
@@ -70,8 +71,21 @@ class _MyHomePageState extends State<MyHomePage> {
 
   int _counter = 0;
 
-  Future<Position> getLocation() async {
+  void _applyPosition(Position position) {
+    if (!mounted) return;
+    setState(() {
+      currentLat = position.latitude;
+      currentLng = position.longitude;
+      targetBearing = calculateBearing(
+        currentLat,
+        currentLng,
+        targetLat,
+        targetLng,
+      );
+    });
+  }
 
+  Future<Position> getLocation() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       throw Exception('Location services are disabled');
@@ -87,86 +101,134 @@ class _MyHomePageState extends State<MyHomePage> {
       throw Exception('Location permission denied');
     }
 
-    final position = await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high,
-    );
-
-    if (mounted) {
-      setState(() {
-        currentLat = position.latitude;
-        currentLng = position.longitude;
-
-        targetBearing = calculateBearing(
-          currentLat,
-          currentLng,
-          targetLat,
-          targetLng,
-        );
-      });
+    Future<Position?> tryLastKnown() async {
+      final last = await Geolocator.getLastKnownPosition();
+      if (last != null) {
+        _applyPosition(last);
+        return last;
+      }
+      return null;
     }
 
-    return position;
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.medium,
+        timeLimit: const Duration(seconds: 12),
+      );
+      _applyPosition(position);
+      return position;
+    } catch (_) {
+      final cached = await tryLastKnown();
+      if (cached != null) return cached;
+    }
+
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.low,
+        timeLimit: const Duration(seconds: 25),
+      );
+      _applyPosition(position);
+      return position;
+    } catch (_) {
+      final cached = await tryLastKnown();
+      if (cached != null) return cached;
+    }
+
+    throw Exception(
+      'Could not get your location. Try moving outdoors or tap Retry.',
+    );
   }
 
-    PrayerTimes getPrayerTimes(double lat, double lon) {
-      final coordinates = Coordinates(lat, lon);
+  void _refreshNextPrayer() {
+    setState(() {
+      _nextPrayerFuture = getNextPrayerTime();
+    });
+  }
 
-      final params = CalculationMethod.muslim_world_league.getParameters();
-      params.madhab = Madhab.shafi; // Kerala follows Shafi
-
-      final date = DateComponents.from(DateTime.now());
-
-      return PrayerTimes(coordinates, date, params);
+  String _prayerLoadErrorMessage(Object? error) {
+    if (error is TimeoutException) {
+      return 'Getting your location timed out. Check GPS or tap Retry.';
     }
-    NextPrayerData getNextPrayer(PrayerTimes prayerTimes) {
-      final next = prayerTimes.nextPrayer();
-      final time = prayerTimes.timeForPrayer(next);
-
-      if (time == null) {
-        throw Exception('Next prayer time unavailable');
-      }
-
-      final remaining = time.difference(DateTime.now());
-      return NextPrayerData(
-        name: next.name,
-        time: time,
-        remainingText: formatRemainingDuration(remaining),
-      );
+    if (error is LocationServiceDisabledException) {
+      return 'Location is turned off. Enable it in settings and tap Retry.';
     }
-    String formatTime(DateTime time) {
-      return DateFormat('h.mm').format(time);
+    final msg = error.toString();
+    if (msg.contains('Location services are disabled')) {
+      return 'Location services are disabled. Turn them on and tap Retry.';
     }
-
-    String formatRemainingDuration(Duration duration) {
-      if (duration.isNegative) {
-        return '0 minutes more';
-      }
-
-      final totalMinutes = duration.inMinutes;
-      final hours = totalMinutes ~/ 60;
-      final minutes = totalMinutes % 60;
-
-      if (hours == 0) {
-        return '$minutes minute${minutes == 1 ? '' : 's'} more';
-      }
-
-      if (minutes == 0) {
-        return '$hours hour${hours == 1 ? '' : 's'} more';
-      }
-
-      return '$hours hour${hours == 1 ? '' : 's'} and $minutes minute${minutes == 1 ? '' : 's'} more';
+    if (msg.contains('permission denied')) {
+      return 'Location permission is required. Grant it in settings and tap Retry.';
     }
-    Future<NextPrayerData> getNextPrayerTime() async {
-      final position = await getLocation();
+    if (msg.contains('Could not get your location')) {
+      return msg.replaceFirst('Exception: ', '');
+    }
+    if (msg.contains('Next prayer time unavailable')) {
+      return 'Could not determine the next prayer. Tap Retry.';
+    }
+    return 'Unable to load prayer times. Tap Retry.';
+  }
 
-      final prayerTimes = getPrayerTimes(
-        position.latitude,
-        position.longitude,
-      );
+  PrayerTimes getPrayerTimes(double lat, double lon) {
+    final coordinates = Coordinates(lat, lon);
 
-      return getNextPrayer(prayerTimes);
+    final params = CalculationMethod.muslim_world_league.getParameters();
+    params.madhab = Madhab.shafi; // Kerala follows Shafi
+
+    final date = DateComponents.from(DateTime.now());
+
+    return PrayerTimes(coordinates, date, params);
+  }
+
+  NextPrayerData getNextPrayer(PrayerTimes prayerTimes) {
+    final next = prayerTimes.nextPrayer();
+    final time = prayerTimes.timeForPrayer(next);
+
+    if (time == null) {
+      throw Exception('Next prayer time unavailable');
     }
 
+    final remaining = time.difference(DateTime.now());
+    return NextPrayerData(
+      name: next.name,
+      time: time,
+      remainingText: formatRemainingDuration(remaining),
+    );
+  }
+
+  String formatTime(DateTime time) {
+    return DateFormat('h.mm').format(time);
+  }
+
+  String formatRemainingDuration(Duration duration) {
+    if (duration.isNegative) {
+      return '0 minutes more';
+    }
+
+    final totalMinutes = duration.inMinutes;
+    final hours = totalMinutes ~/ 60;
+    final minutes = totalMinutes % 60;
+
+    if (hours == 0) {
+      return '$minutes minute${minutes == 1 ? '' : 's'} more';
+    }
+
+    if (minutes == 0) {
+      return '$hours hour${hours == 1 ? '' : 's'} more';
+    }
+
+    return '$hours hour${hours == 1 ? '' : 's'} and $minutes minute${minutes == 1 ? '' : 's'} more';
+  }
+
+  Future<NextPrayerData> getNextPrayerTime() async {
+    final position = await getLocation();
+
+    final prayerTimes = getPrayerTimes(
+      position.latitude,
+      position.longitude,
+    );
+
+    return getNextPrayer(prayerTimes);
+  }
 
   @override
   void initState() {
@@ -246,7 +308,28 @@ class _MyHomePageState extends State<MyHomePage> {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const CircularProgressIndicator();
                 } else if (snapshot.hasError) {
-                  return const Text('Unable to load next prayer');
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _prayerLoadErrorMessage(snapshot.error),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        FilledButton.icon(
+                          onPressed: _refreshNextPrayer,
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  );
                 } else {
                   final nextPrayer = snapshot.data!;
                   return Container(

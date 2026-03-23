@@ -5,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:adhan/adhan.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const MyApp());
@@ -58,10 +59,13 @@ class NextPrayerData {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
+  static const String _lastLatKey = 'last_known_prayer_lat';
+  static const String _lastLngKey = 'last_known_prayer_lng';
 
   double? phoneHeading;
   double? targetBearing;
   late Future<NextPrayerData> _nextPrayerFuture;
+  bool _usingPreviousLocation = false;
 
   double currentLat = 0;
   double currentLng = 0;
@@ -71,11 +75,11 @@ class _MyHomePageState extends State<MyHomePage> {
 
   int _counter = 0;
 
-  void _applyPosition(Position position) {
+  void _applyCoordinates(double lat, double lng) {
     if (!mounted) return;
     setState(() {
-      currentLat = position.latitude;
-      currentLng = position.longitude;
+      currentLat = lat;
+      currentLng = lng;
       targetBearing = calculateBearing(
         currentLat,
         currentLng,
@@ -85,9 +89,36 @@ class _MyHomePageState extends State<MyHomePage> {
     });
   }
 
-  Future<Position> getLocation() async {
+  Future<void> _saveLastLocation(double lat, double lng) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_lastLatKey, lat);
+    await prefs.setDouble(_lastLngKey, lng);
+  }
+
+  Future<({double lat, double lng})?> _loadLastLocation() async {
+    final prefs = await SharedPreferences.getInstance();
+    final lat = prefs.getDouble(_lastLatKey);
+    final lng = prefs.getDouble(_lastLngKey);
+    if (lat == null || lng == null) {
+      return null;
+    }
+    return (lat: lat, lng: lng);
+  }
+
+  Future<({double lat, double lng, bool usedPrevious})> getLocation() async {
+    Future<({double lat, double lng, bool usedPrevious})?> trySaved() async {
+      final saved = await _loadLastLocation();
+      if (saved != null) {
+        _applyCoordinates(saved.lat, saved.lng);
+        return (lat: saved.lat, lng: saved.lng, usedPrevious: true);
+      }
+      return null;
+    }
+
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
+      final saved = await trySaved();
+      if (saved != null) return saved;
       throw Exception('Location services are disabled');
     }
 
@@ -98,14 +129,17 @@ class _MyHomePageState extends State<MyHomePage> {
 
     if (permission == LocationPermission.denied ||
         permission == LocationPermission.deniedForever) {
+      final saved = await trySaved();
+      if (saved != null) return saved;
       throw Exception('Location permission denied');
     }
 
-    Future<Position?> tryLastKnown() async {
+    Future<({double lat, double lng, bool usedPrevious})?> tryLastKnown() async {
       final last = await Geolocator.getLastKnownPosition();
       if (last != null) {
-        _applyPosition(last);
-        return last;
+        _applyCoordinates(last.latitude, last.longitude);
+        await _saveLastLocation(last.latitude, last.longitude);
+        return (lat: last.latitude, lng: last.longitude, usedPrevious: false);
       }
       return null;
     }
@@ -115,9 +149,16 @@ class _MyHomePageState extends State<MyHomePage> {
         desiredAccuracy: LocationAccuracy.medium,
         timeLimit: const Duration(seconds: 12),
       );
-      _applyPosition(position);
-      return position;
+      _applyCoordinates(position.latitude, position.longitude);
+      await _saveLastLocation(position.latitude, position.longitude);
+      return (
+        lat: position.latitude,
+        lng: position.longitude,
+        usedPrevious: false,
+      );
     } catch (_) {
+      final saved = await trySaved();
+      if (saved != null) return saved;
       final cached = await tryLastKnown();
       if (cached != null) return cached;
     }
@@ -127,9 +168,16 @@ class _MyHomePageState extends State<MyHomePage> {
         desiredAccuracy: LocationAccuracy.low,
         timeLimit: const Duration(seconds: 25),
       );
-      _applyPosition(position);
-      return position;
+      _applyCoordinates(position.latitude, position.longitude);
+      await _saveLastLocation(position.latitude, position.longitude);
+      return (
+        lat: position.latitude,
+        lng: position.longitude,
+        usedPrevious: false,
+      );
     } catch (_) {
+      final saved = await trySaved();
+      if (saved != null) return saved;
       final cached = await tryLastKnown();
       if (cached != null) return cached;
     }
@@ -220,11 +268,16 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<NextPrayerData> getNextPrayerTime() async {
-    final position = await getLocation();
+    final location = await getLocation();
+    if (mounted) {
+      setState(() {
+        _usingPreviousLocation = location.usedPrevious;
+      });
+    }
 
     final prayerTimes = getPrayerTimes(
-      position.latitude,
-      position.longitude,
+      location.lat,
+      location.lng,
     );
 
     return getNextPrayer(prayerTimes);
@@ -332,38 +385,55 @@ class _MyHomePageState extends State<MyHomePage> {
                   );
                 } else {
                   final nextPrayer = snapshot.data!;
-                  return Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                    decoration: BoxDecoration(
-                      color: Colors.deepPurple.shade50,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Column(
-                      children: [
-                        const Text(
-                          "Next prayer is",
-                          style: TextStyle(fontSize: 14, color: Colors.black54),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          "${nextPrayer.name} at ${formatTime(nextPrayer.time)}",
-                          style: const TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.deepPurple,
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_usingPreviousLocation)
+                        const Padding(
+                          padding: EdgeInsets.only(bottom: 8),
+                          child: Text(
+                            'Showing prayer time from your previous location',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
+                            ),
                           ),
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          nextPrayer.remainingText,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.green,
-                          ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.deepPurple.shade50,
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                      ],
-                    ),
+                        child: Column(
+                          children: [
+                            const Text(
+                              "Next prayer is",
+                              style: TextStyle(fontSize: 14, color: Colors.black54),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              "${nextPrayer.name} at ${formatTime(nextPrayer.time)}",
+                              style: const TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.deepPurple,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              nextPrayer.remainingText,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.green,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   );
                 }
               },

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:adhan/adhan.dart';
@@ -256,8 +257,23 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   NextPrayerData getNextPrayer(PrayerTimes prayerTimes) {
-    final next = prayerTimes.nextPrayer();
-    final time = prayerTimes.timeForPrayer(next);
+    var next = prayerTimes.nextPrayer();
+    DateTime? time = prayerTimes.timeForPrayer(next);
+
+    // If today's next prayer is unavailable, move to tomorrow's Fajr.
+    if (next == Prayer.none || time == null) {
+      final tomorrowDate = DateComponents.from(
+        DateTime.now().add(const Duration(days: 1)),
+      );
+      final tomorrowPrayerTimes = PrayerTimes(
+        Coordinates(currentLat, currentLng),
+        tomorrowDate,
+        CalculationMethod.muslim_world_league.getParameters()
+          ..madhab = Madhab.shafi,
+      );
+      next = Prayer.fajr;
+      time = tomorrowPrayerTimes.fajr;
+    }
 
     if (time == null) {
       throw Exception('Next prayer time unavailable');
@@ -319,10 +335,12 @@ class _MyHomePageState extends State<MyHomePage> {
 
     _nextPrayerFuture = getNextPrayerTime();
     _updateLocationAvailability();
-    _locationServiceSubscription =
-        Geolocator.getServiceStatusStream().listen((_) {
-      _updateLocationAvailability();
-    });
+    if (!kIsWeb) {
+      _locationServiceSubscription =
+          Geolocator.getServiceStatusStream().listen((_) {
+        _updateLocationAvailability();
+      });
+    }
 
     FlutterCompass.events?.listen((event) {
       setState(() {

@@ -6,6 +6,7 @@ import 'package:flutter_compass/flutter_compass.dart';
 import 'package:adhan/adhan.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:hello_app/thasbeeh_page.dart';
 
 void main() {
   runApp(const MyApp());
@@ -73,8 +74,6 @@ class _MyHomePageState extends State<MyHomePage> {
   double targetLat = 21.4225;
   double targetLng = 39.8262;
 
-  int _counter = 0;
-
   void _applyCoordinates(double lat, double lng) {
     if (!mounted) return;
     setState(() {
@@ -105,7 +104,9 @@ class _MyHomePageState extends State<MyHomePage> {
     return (lat: lat, lng: lng);
   }
 
-  Future<({double lat, double lng, bool usedPrevious})> getLocation() async {
+  Future<({double lat, double lng, bool usedPrevious})> getLocation({
+    bool preferFreshLocation = false,
+  }) async {
     Future<({double lat, double lng, bool usedPrevious})?> trySaved() async {
       final saved = await _loadLastLocation();
       if (saved != null) {
@@ -117,6 +118,9 @@ class _MyHomePageState extends State<MyHomePage> {
 
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
+      if (preferFreshLocation) {
+        throw Exception('Location services are disabled');
+      }
       final saved = await trySaved();
       if (saved != null) return saved;
       throw Exception('Location services are disabled');
@@ -129,6 +133,9 @@ class _MyHomePageState extends State<MyHomePage> {
 
     if (permission == LocationPermission.denied ||
         permission == LocationPermission.deniedForever) {
+      if (preferFreshLocation) {
+        throw Exception('Location permission denied');
+      }
       final saved = await trySaved();
       if (saved != null) return saved;
       throw Exception('Location permission denied');
@@ -139,15 +146,16 @@ class _MyHomePageState extends State<MyHomePage> {
       if (last != null) {
         _applyCoordinates(last.latitude, last.longitude);
         await _saveLastLocation(last.latitude, last.longitude);
-        return (lat: last.latitude, lng: last.longitude, usedPrevious: false);
+        return (lat: last.latitude, lng: last.longitude, usedPrevious: true);
       }
       return null;
     }
 
     try {
+      // Give GPS enough time first, especially when offline.
       final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.medium,
-        timeLimit: const Duration(seconds: 12),
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 30),
       );
       _applyCoordinates(position.latitude, position.longitude);
       await _saveLastLocation(position.latitude, position.longitude);
@@ -156,17 +164,12 @@ class _MyHomePageState extends State<MyHomePage> {
         lng: position.longitude,
         usedPrevious: false,
       );
-    } catch (_) {
-      final saved = await trySaved();
-      if (saved != null) return saved;
-      final cached = await tryLastKnown();
-      if (cached != null) return cached;
-    }
+    } catch (_) {}
 
     try {
       final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.low,
-        timeLimit: const Duration(seconds: 25),
+        desiredAccuracy: LocationAccuracy.medium,
+        timeLimit: const Duration(seconds: 20),
       );
       _applyCoordinates(position.latitude, position.longitude);
       await _saveLastLocation(position.latitude, position.longitude);
@@ -175,12 +178,19 @@ class _MyHomePageState extends State<MyHomePage> {
         lng: position.longitude,
         usedPrevious: false,
       );
-    } catch (_) {
-      final saved = await trySaved();
-      if (saved != null) return saved;
-      final cached = await tryLastKnown();
-      if (cached != null) return cached;
+    } catch (_) {}
+
+    if (preferFreshLocation) {
+      throw Exception(
+        'Could not get your current location yet. Please wait a moment and tap refresh again.',
+      );
     }
+
+    final cached = await tryLastKnown();
+    if (cached != null) return cached;
+
+    final saved = await trySaved();
+    if (saved != null) return saved;
 
     throw Exception(
       'Could not get your location. Try moving outdoors or tap Retry.',
@@ -189,7 +199,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   void _refreshNextPrayer() {
     setState(() {
-      _nextPrayerFuture = getNextPrayerTime();
+      _nextPrayerFuture = getNextPrayerTime(preferFreshLocation: true);
     });
   }
 
@@ -267,8 +277,10 @@ class _MyHomePageState extends State<MyHomePage> {
     return '$hours hour${hours == 1 ? '' : 's'} and $minutes minute${minutes == 1 ? '' : 's'} more';
   }
 
-  Future<NextPrayerData> getNextPrayerTime() async {
-    final location = await getLocation();
+  Future<NextPrayerData> getNextPrayerTime({
+    bool preferFreshLocation = false,
+  }) async {
+    final location = await getLocation(preferFreshLocation: preferFreshLocation);
     if (mounted) {
       setState(() {
         _usingPreviousLocation = location.usedPrevious;
@@ -316,23 +328,6 @@ class _MyHomePageState extends State<MyHomePage> {
     return brng;
   }
 
-  void _resetCounter() {
-    setState(() {
-      _counter = 0;
-    });
-  }
-
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     // This method is rerun every time setState is called, for instance as done
@@ -350,6 +345,13 @@ class _MyHomePageState extends State<MyHomePage> {
         // Here we take the value from the MyHomePage object that was created by
         // the App.build method, and use it to set our appbar title.
         title: Text(widget.title),
+        actions: [
+          IconButton(
+            onPressed: _refreshNextPrayer,
+            tooltip: 'Refresh location',
+            icon: const Icon(Icons.my_location),
+          ),
+        ],
       ),
       body: Center(
         child: Column(
@@ -450,7 +452,15 @@ class _MyHomePageState extends State<MyHomePage> {
             const SizedBox(height: 16),
             // Compass Needle
             targetBearing == null
-                ? const CircularProgressIndicator()
+                ? const SizedBox(
+                    height: 120,
+                    child: Center(
+                      child: Text(
+                        'Direction unavailable',
+                        style: TextStyle(color: Colors.black54),
+                      ),
+                    ),
+                  )
                 : Transform.rotate(
                     angle:
                         ((targetBearing! - (phoneHeading ?? 0)) * pi / 180),
@@ -462,50 +472,20 @@ class _MyHomePageState extends State<MyHomePage> {
                   ),
 
             const SizedBox(height: 40),
-
-            const Text('You have done your thasbeeh this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-            const SizedBox(height: 32),
-            Center(
-              child: ElevatedButton(
-                onPressed: _incrementCounter,
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(30),
+            ElevatedButton.icon(
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const ThasbeehPage(),
                   ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                children: const [
-                  Icon(Icons.add),
-                  SizedBox(width: 8),
-                  Text('count thasbeeh'),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Center(
-              child: ElevatedButton(
-                onPressed: _resetCounter,
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(30),
-                  ),
-                  backgroundColor: Colors.red,
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: const [
-                    Icon(Icons.refresh, color: Colors.white),
-                    SizedBox(width: 8),
-                    Text('Thasbeeh Target Finished', style: TextStyle(color: Colors.white)), 
-                  ],
+                );
+              },
+              icon: const Icon(Icons.arrow_forward),
+              label: const Text('Go to Thasbeeh'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(30),
                 ),
               ),
             ),

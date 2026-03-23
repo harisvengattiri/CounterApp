@@ -122,6 +122,18 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<({double lat, double lng, bool usedPrevious})> getLocation({
     bool preferFreshLocation = false,
   }) async {
+    Future<({double lat, double lng, bool usedPrevious})?> tryPlatformLastKnown() async {
+      try {
+        final last = await Geolocator.getLastKnownPosition();
+        if (last != null) {
+          _applyCoordinates(last.latitude, last.longitude);
+          await _saveLastLocation(last.latitude, last.longitude);
+          return (lat: last.latitude, lng: last.longitude, usedPrevious: true);
+        }
+      } catch (_) {}
+      return null;
+    }
+
     Future<({double lat, double lng, bool usedPrevious})?> trySaved() async {
       final saved = await _loadLastLocation();
       if (saved != null) {
@@ -139,6 +151,8 @@ class _MyHomePageState extends State<MyHomePage> {
       }
       final saved = await trySaved();
       if (saved != null) return saved;
+      final platformLastKnown = await tryPlatformLastKnown();
+      if (platformLastKnown != null) return platformLastKnown;
       throw Exception('Location services are disabled');
     }
 
@@ -156,16 +170,6 @@ class _MyHomePageState extends State<MyHomePage> {
       final saved = await trySaved();
       if (saved != null) return saved;
       throw Exception('Location permission denied');
-    }
-
-    Future<({double lat, double lng, bool usedPrevious})?> tryLastKnown() async {
-      final last = await Geolocator.getLastKnownPosition();
-      if (last != null) {
-        _applyCoordinates(last.latitude, last.longitude);
-        await _saveLastLocation(last.latitude, last.longitude);
-        return (lat: last.latitude, lng: last.longitude, usedPrevious: true);
-      }
-      return null;
     }
 
     try {
@@ -205,7 +209,7 @@ class _MyHomePageState extends State<MyHomePage> {
       );
     }
 
-    final cached = await tryLastKnown();
+    final cached = await tryPlatformLastKnown();
     if (cached != null) return cached;
 
     final saved = await trySaved();

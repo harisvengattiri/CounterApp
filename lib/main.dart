@@ -76,7 +76,7 @@ class NextPrayerComparisonData {
   });
 }
 
-class _MyHomePageState extends State<MyHomePage> {
+class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   static const String _adhanAssetPath = 'assets/audio/adhan.mp3';
 
   static const String _lastLatKey = 'last_known_prayer_lat';
@@ -422,6 +422,8 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> _syncBackgroundAdhanAlarms(double lat, double lon) async {
     if (!_backgroundAdhanEnabled) return;
 
+    await _ensureAndroidPrayerPermissions();
+
     final now = DateTime.now();
     final today = adhan.PrayerTimes(
       adhan.Coordinates(lat, lon),
@@ -461,34 +463,26 @@ class _MyHomePageState extends State<MyHomePage> {
         androidFullScreenIntent: true,
         // Avoid tying alarm audio to the Flutter task; improves behavior when the app is backgrounded.
         androidStopAlarmOnTermination: false,
-        volumeSettings: VolumeSettings.fade(
-          volume: 0.8,
-          fadeDuration: const Duration(seconds: 3),
-        ),
+        // Full volume immediately — fade-from-zero can be inaudible on some devices until the screen turns on.
+        volumeSettings: const VolumeSettings.fixed(volume: 0.85),
         notificationSettings: NotificationSettings(
           title: 'Adhan time',
           body: 'It is time for ${item.$1}',
           stopButton: 'Stop',
         ),
       );
-      await Alarm.set(alarmSettings: alarmSettings);
+      var ok = await Alarm.set(alarmSettings: alarmSettings);
+      if (!ok && defaultTargetPlatform == TargetPlatform.android) {
+        await _ensureAndroidPrayerPermissions();
+        ok = await Alarm.set(alarmSettings: alarmSettings);
+      }
     }
   }
-
-  static const Duration _maxAdhanLateness = Duration(minutes: 3);
 
   void _setupAlarmRingingListener() {
     _alarmRingingSubscription = Alarm.ringing.listen((alarmSet) async {
       if (!mounted || _isAdhanDialogVisible) return;
       if (alarmSet.alarms.isEmpty) return;
-
-      final now = DateTime.now();
-      for (final alarm in alarmSet.alarms) {
-        if (now.difference(alarm.dateTime) > _maxAdhanLateness) {
-          await Alarm.stop(alarm.id);
-          return;
-        }
-      }
 
       _isAdhanDialogVisible = true;
       await showDialog<void>(
@@ -577,8 +571,24 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    if (!_backgroundAdhanEnabled) return;
+    unawaited(_resyncAlarmsAfterResume().catchError((_) {}));
+  }
+
+  Future<void> _resyncAlarmsAfterResume() async {
+    final prefs = await SharedPreferences.getInstance();
+    final lat = prefs.getDouble(_lastLatKey);
+    final lng = prefs.getDouble(_lastLngKey);
+    if (lat == null || lng == null) return;
+    await _syncBackgroundAdhanAlarms(lat, lng);
+  }
+
+  @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
 
     _loadBackgroundAdhanPreference();
     _setupAlarmRingingListener();
@@ -610,6 +620,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _locationServiceSubscription?.cancel();
     _alarmRingingSubscription?.cancel();
     super.dispose();

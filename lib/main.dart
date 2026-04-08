@@ -1056,12 +1056,15 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
         ],
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => unawaited(_onLocationFabPressed()),
-        backgroundColor: _gpsSatelliteOn ? Colors.green : Colors.red,
-        foregroundColor: Colors.white,
-        tooltip: 'Update location for prayer times',
-        child: const Icon(Icons.my_location),
+      floatingActionButton: Padding(
+        padding: const EdgeInsets.only(bottom: 50),
+        child: FloatingActionButton(
+          onPressed: () => unawaited(_onLocationFabPressed()),
+          backgroundColor: _gpsSatelliteOn ? Colors.green : Colors.red,
+          foregroundColor: Colors.white,
+          tooltip: 'Update location for prayer times',
+          child: const Icon(Icons.my_location),
+        ),
       ),
       body: SafeArea(
         child: Column(

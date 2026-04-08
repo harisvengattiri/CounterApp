@@ -1056,7 +1056,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       floatingActionButton: Padding(
-        padding: const EdgeInsets.only(bottom: 50),
+        padding: const EdgeInsets.only(bottom: 75),
         child: FloatingActionButton(
           onPressed: () => unawaited(_onLocationFabPressed()),
           backgroundColor: _gpsSatelliteOn ? Colors.green : Colors.red,
